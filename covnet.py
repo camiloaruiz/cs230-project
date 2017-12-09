@@ -17,8 +17,12 @@ import random
 from timeit import default_timer as timer
 
 import cv2
-from matplotlib import pyplot as plt
 import scipy.stats as stats
+from sklearn.metrics import accuracy_score, precision_score, recall_score, mean_squared_error, roc_auc_score, roc_curve, auc
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 #----------------------------------------------------------------------------------
 # read_header(infile):  takes an aps file and creates a dict of the data
@@ -65,7 +69,7 @@ import scipy.stats as stats
 #
 #----------------------------------------------------------------------------------------
 INPUT_FOLDER = 'tsa_datasets/stage1/aps/stage1_aps'
-PREPROCESSED_DATA_FOLDER = 'small/preprocessed/'
+PREPROCESSED_DATA_FOLDER = 'small/preprocessed/preprocessed'
 STAGE1_LABELS = 'tsa_datasets/stage1_labels.csv'
 THREAT_ZONE = 1
 BATCH_SIZE = 2
@@ -603,17 +607,17 @@ def zero_center(image):
 def preprocess_tsa_data():
     
     #OPTION 1: get a list of all subjects for which there are labels
-    df = pd.read_csv(STAGE1_LABELS)
-    df['Subject'], df['Zone'] = df['Id'].str.split('_',1).str
-    SUBJECT_LIST = df['Subject'].unique()
+    # df = pd.read_csv(STAGE1_LABELS)
+    # df['Subject'], df['Zone'] = df['Id'].str.split('_',1).str
+    # SUBJECT_LIST = df['Subject'].unique()
 
     #OPTION 2: get a list of all subjects for whom there is data
     #SUBJECT_LIST = [os.path.splitext(subject)[0] for subject in os.listdir(INPUT_FOLDER)]
     
     # OPTION 3: get a list of subjects for small bore test purposes
-    # SUBJECT_LIST = ['00360f79fd6e02781457eda48f85da90','0043db5e8c819bffc15261b1f1ac5e42',
-    #                 '0050492f92e22eed3474ae3a6fc907fa','006ec59fa59dd80a64c85347eef810c7',
-    #                 '0097503ee9fa0606559c56458b281a08','011516ab0eca7cad7f5257672ddde70e']
+    SUBJECT_LIST = ['00360f79fd6e02781457eda48f85da90','0043db5e8c819bffc15261b1f1ac5e42',
+                    '0050492f92e22eed3474ae3a6fc907fa','006ec59fa59dd80a64c85347eef810c7',
+                    '0097503ee9fa0606559c56458b281a08','011516ab0eca7cad7f5257672ddde70e']
     
     # intialize tracking and saving items
     batch_num = 1
@@ -709,7 +713,7 @@ def preprocess_tsa_data():
         # each subject gets EXAMPLES_PER_SUBJECT number of examples (182 to be exact, 
         # so this section just writes out the the data once there is a full minibatch 
         # complete.
-        if ((len(threat_zone_examples) % (BATCH_SIZE * EXAMPLES_PER_SUBJECT)) == 0):
+        if ((len(threat_zone_examples) % (BATCH_SIZE * EXAMPLES_PER_SUBJECT)) == 0 and batch_num > 8):
             for tz_num, tz in enumerate(zone_slice_list):
                 tz_examples_to_save = []
 
@@ -747,7 +751,7 @@ def preprocess_tsa_data():
     
     # we may run out of subjects before we finish a batch, so we write out 
     # the last batch stub
-    if (len(threat_zone_examples) > 0):
+    if (len(threat_zone_examples) > 0) and batch_num > 8:
         for tz_num, tz in enumerate(zone_slice_list):
 
             tz_examples_to_save = []
@@ -884,7 +888,7 @@ def alexnet(width, height, lr):
     network = dropout(network, 0.5)
     network = fully_connected(network, 2, activation='softmax')
     network = regression(network, optimizer='momentum', loss='categorical_crossentropy', 
-                         learning_rate=lr, name='labels')
+                         learning_rate=lr, name='labels', metric='accuracy')
 
     model = tflearn.DNN(network, checkpoint_path=MODEL_PATH_ALEXNET + MODEL_NAME_ALEXNET, 
                         tensorboard_dir=TRAIN_PATH_ALEXNET, tensorboard_verbose=3, max_checkpoints=1)
@@ -955,7 +959,7 @@ def vgg19(width, height, lr):
     network = dropout(network, 0.5)
     network = fully_connected(network, 2, activation='softmax')
     network = regression(network, optimizer='momentum', loss='categorical_crossentropy', 
-                         learning_rate=lr, name='labels')
+                         learning_rate=lr, name='labels', metric=['accuracy','loss'])
 
     model = tflearn.DNN(network, checkpoint_path=MODEL_PATH_VGG19 + MODEL_NAME_VGG19, 
                         tensorboard_dir=TRAIN_PATH_VGG19, tensorboard_verbose=3, max_checkpoints=1)
@@ -996,6 +1000,44 @@ def get_features_and_labels():
     val_features = val_features.reshape(-1, IMAGE_DIM, IMAGE_DIM, 1)
     return [val_features, val_labels]
 
+def printGraph(train, test, name, index):
+    # sns.set_style("darkgrid")
+    epochs = [i+1 for i in range(index)]
+    print(name)
+    print("Train: ")
+    print(train)
+    print("Test: ")
+    print(test)
+    print(epochs)
+    plt.plot(epochs, test, 'r', label = "Test")
+    plt.plot(epochs, train, 'b', label = "Train")
+    plt.legend(loc = "upper left")  
+    plt.title(name+" vs. Epochs")
+    plt.xlabel("Epochs")
+    plt.ylabel(name)
+    plt.savefig("result_graphs/%s_train_vs_test_%i_epochs.png"%(name, 10))
+    plt.show()
+    plt.clf()
+
+
+def get_metrics(predictions, labels, y_conv):
+    acc, recall, precision, auc_score, msqe = 0, 0, 0, 0, 0
+    num_labels = len(labels)
+    for i in range(num_labels):
+      acc += accuracy_score(predictions[i], labels[i])
+      recall += recall_score(predictions[i], labels[i])
+      precision += precision_score(predictions[i], labels[i])
+      try:
+        auc_score += roc_auc_score(predictions[i], labels[i])
+      except ValueError:
+        pass
+
+    msqe = mean_squared_error(labels, y_conv)
+    auc_score  /= num_labels
+    acc  /= num_labels
+    precision  /= num_labels
+    recall /= num_labels
+    return acc, recall, precision, auc_score, msqe
 
 #---------------------------------------------------------------------------------------
 # train_conv_net(): runs the train op
@@ -1005,33 +1047,66 @@ def get_features_and_labels():
 # returns:         none
 #
 #-------------------------------------------------------------------------------------
-
 def train_conv_net(model, model_name, num_epoch):
     # start training process
-    for i in range(N_TRAIN_STEPS):
+    train_acc, train_loss, train_recall, train_precision, train_auc, train_msqe = [],[],[],[],[],[]
+    test_acc, test_loss, test_recall, test_precision, test_auc, test_msqe = [],[],[],[],[],[]
+    count = 0
+    for i in range(10):
         # shuffle the train set files before each step
         shuffle_train_set(TRAIN_SET_FILE_LIST)
         print(TRAIN_SET_FILE_LIST)
         # run through every batch in the training set
+        
         for f_in in TRAIN_SET_FILE_LIST:
-            
             # read in a batch of features and labels for training
             feature_batch, label_batch = input_pipeline(f_in, PREPROCESSED_DATA_FOLDER)
             feature_batch = feature_batch.reshape(-1, IMAGE_DIM, IMAGE_DIM, 1)
             print ('Feature Batch Shape ->', feature_batch.shape)                
-                
+            print()
             # run the fit operation
-            print("training model: ")
-            print(model.fit({'features': feature_batch}, {'labels': label_batch}, n_epoch=10, 
+            model.fit(feature_batch, label_batch, n_epoch=1, 
                       validation_set=({'features': val_features}, {'labels': val_labels}), 
                       shuffle=True, snapshot_step=None, show_metric=True, 
-                      run_id=model_name))    
+                      run_id=model_name)
+            predictions = model.predict(feature_batch)
+            y_conv = predictions
+            loss = model.evaluate(feature_batch, label_batch)[0]
+            predictions[predictions >= 0.5] = 1
+            predictions[predictions < 0.5] = 0
+            acc = accuracy_score(predictions, label_batch)
+            msqe = mean_squared_error(label_batch, y_conv)
+            train_acc.append(acc)
+            train_loss.append(loss)
+            train_auc.append(auc)
+            train_msqe.append(msqe)
+
+            predictions = model.predict(val_features)
+            y_conv = predictions
+            loss = model.evaluate(val_features, val_labels)[0]
+            predictions[predictions >= 0.5] = 1
+            predictions[predictions < 0.5] = 0
+            acc = accuracy_score(predictions, val_labels)
+            msqe = mean_squared_error(val_labels, y_conv)
+            test_acc.append(acc)
+            test_loss.append(loss)
+            test_auc.append(auc)
+            test_msqe.append(msqe)
+            print("Getting count: ")
+            print(count)
+            printGraph(train_acc, test_acc, "Accuracy", count + 1)
+            printGraph(train_loss, test_loss, "Loss", count + 1)
+            printGraph(train_msqe, test_msqe, "Mean Squared Error", count + 1)
+            count += 1
+
+            
 
 
-preprocess_tsa_data()
+# preprocess_tsa_data()
 val_features, val_labels = get_features_and_labels()
 
 # AlexNet, basic model
+
 g_alexnet = tf.Graph()
 with g_alexnet.as_default():
     alexnet_model = alexnet(IMAGE_DIM, IMAGE_DIM, 1e-4)
